@@ -2,7 +2,7 @@ from huggingface_hub import InferenceClient
 
 client = InferenceClient(
     provider="sambanova",
-    api_key="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",
+    api_key="",
 )
 
 completion = client.chat.completions.create(
