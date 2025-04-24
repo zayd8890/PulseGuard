@@ -1,0 +1,7 @@
+streamlit==1.38.0
+pandas==2.1.4
+numpy==1.26.3
+torch==2.2.0
+plotly==5.18.0
+pymongo==4.6.2
+huggingface-hub==0.20.3
