@@ -3,8 +3,6 @@ import pandas as pd
 import numpy as np
 import datetime
 import time
-from tools.send_email import ai_email_agent
-import json
 import random
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -31,6 +29,21 @@ def get_mongodb_connection():
     db = client["medical_monitoring"]
     return db
 
+def save_contact_to_mongodb(contact_data):
+    db = get_mongodb_connection()
+    contacts_collection = db["contacts"]
+    contacts_collection.insert_one(contact_data)
+
+def delete_contact_and_archive(email):
+    db = get_mongodb_connection()
+    contacts_collection = db["contacts"]
+    archived_collection = db["archived_contacts"]
+
+    contact = contacts_collection.find_one({"email": email})
+    if contact:
+        archived_collection.insert_one(contact)
+        contacts_collection.delete_one({"email": email})
+
 # Initialize MongoDB collections
 def initialize_collections(db):
     # Create collections if they don't exist
@@ -49,27 +62,6 @@ def initialize_collections(db):
 # Get MongoDB connection and collections
 db = get_mongodb_connection()
 vital_signs_collection, chat_history_collection = initialize_collections(db)
-
-
-def handle_alert(contact, situation_description):
-    """Immediately send an alert email without LLM."""
-    alert_message = f"🚨 Immediate Alert: {situation_description}. Please take action!"
-    ai_email_agent(contact, alert_message, type="Alerts")
-
-
-def handle_report(llm, contact, situation_description):
-    """Use LLM to generate a report and send."""
-    prompt = f"""
-You are a medical assistant. Summarize this medical situation into a professional short report email.
-
-Situation:
-{ situation_description }
-
-Output ONLY the email body as plain text.
-"""
-    response = llm(prompt)
-    report_message = response.strip()
-    ai_email_agent(contact, report_message, type="Report")
 
 # Load chat history from MongoDB
 def load_chat_history():
@@ -308,42 +300,21 @@ def get_llm_response(prompt, chat_history=None):
     
     # First add the system message with medical context
     system_message = f"""
-            You are a medical assistant chatbot helping monitor a patient's vital signs.
+    You are a medical assistant chatbot helping monitor a patient's vital signs.
+    The patient's most recent data shows:
+    - Heart Rate (PPG): {st.session_state.current_ppg:.2f} bpm
+    - ABP: {st.session_state.current_abp:.2f} mmHg
+    - SpO2: {st.session_state.current_spo2:.2f}%
+    - SBP: {st.session_state.current_sbp:.2f} mmHg
+    - DBP: {st.session_state.current_dbp:.2f} mmHg
+    - Heart rate Status: {st.session_state.current_HR_status}
+    - Blood pressure Status: {st.session_state.current_BP_status}
+    - Confidence: {st.session_state.current_confidence:.2f}
 
-            Patient's most recent data:
-            - Heart Rate (PPG): {st.session_state.current_ppg:.2f} bpm
-            - ABP: {st.session_state.current_abp:.2f} mmHg
-            - SpO2: {st.session_state.current_spo2:.2f}%
-            - SBP: {st.session_state.current_sbp:.2f} mmHg
-            - DBP: {st.session_state.current_dbp:.2f} mmHg
-            - Heart rate Status: {st.session_state.current_HR_status}
-            - Blood pressure Status: {st.session_state.current_BP_status}
-            - Confidence: {st.session_state.current_confidence:.2f}
-
-            Behaviors:
-            - If the user is asking a general medical question, provide a normal helpful response.
-            - If the user is requesting a report (summaries, statistics, monitoring period, vitals evolution), 
-            reply ONLY with a JSON format:
-            {{
-                "normal_text": "string"(e.g:The report has been sent!),
-                "name" :"string" (default: No),
-                "email": "string" (default:No) 
-                "period_range": "string",
-                "heart_rate": true or false,
-                "blood_pressure": true or false,
-                "spo2": true or false,
-                "SBP": true or false,
-                "DBP": true or false,
-                "additional_notes": "string"
-            }}
-            - "normal_text" should always summarize the response normally even when sending the JSON.
-
-            Important:
-            - If you detect any emergency (e.g., Hypertensive Crisis, Tachycardia), politely advise immediate medical attention.
-            - Never suggest any medication or specific treatments.
-            - Never mix JSON and normal text outside of "normal_text" field.
-            """
-
+    Provide a helpful, professional response. If you detect any medical emergency,
+    advise the user to seek immediate medical attention. Don't provide specific 
+    medication advice but offer general health guidance within your scope.
+    """
     
     formatted_messages.append({
         "role": "system",
@@ -527,58 +498,8 @@ with col2:
             save_chat_message("user", user_input)
 
             response = get_llm_response(user_input, st.session_state.chat_history)
-
-            try:
-                parsed_response = json.loads(response)
-
-                if isinstance(parsed_response, dict) and "normal_text" in parsed_response:
-                    # Show the normal text (the message for user)
-                    st.session_state.chat_history.append({"role": "assistant", "content": parsed_response["normal_text"]})
-                    save_chat_message("assistant", parsed_response["normal_text"])
-
-                    # Print the normal message in the UI
-                    st.markdown(parsed_response["normal_text"])
-
-                    # Start the message
-                    report_message = f"Hi{'' if parsed_response.get('name') == 'No' else ' ' + parsed_response.get('name', '')}, here is your report summary:\n\n"
-
-                    # Build the report based on selected fields
-                    field_mappings = {
-                        'period_range': "Period Range: {}",
-                        'PPG': "Heart Rate data is included.",
-                        'ABP': "Blood Pressure data is included.",
-                        'SBP': "Systolic Blood Pressure (SBP) is included.",
-                        'DBP': "Diastolic Blood Pressure (DBP) is included.",
-                        'spo2': "SpO₂ (Oxygen Saturation) data is included."
-}
-
-                    # Add Period Range if it exists
-                    if parsed_response.get('period_range') and parsed_response['period_range'] != "No":
-                        report_message += f"- {field_mappings['period_range'].format(parsed_response['period_range'])}\n"
-
-                    # Add the other requested fields
-                    for key in ['PPG', 'ABP', 'SBP', 'DBP', 'spo2']:
-                        if parsed_response.get(key, False):
-                            report_message += f"- {field_mappings[key]}\n"
-
-
-                    # Here you would call your email sending logic
-                    # send_report_email(parsed_response)  <-- (for example)
-
-                    # Inform the user that the report was sent
-                    st.success("✅ The report has been sent successfully!")
-
-                else:
-                    # Not the expected JSON, treat it normally
-                    st.session_state.chat_history.append({"role": "assistant", "content": response})
-                    save_chat_message("assistant", response)
-                    st.markdown(response)
-
-            except json.JSONDecodeError:
-                # Not a JSON, treat it normally
-                st.session_state.chat_history.append({"role": "assistant", "content": response})
-                save_chat_message("assistant", response)
-                st.markdown(response)
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            save_chat_message("assistant", response)
     
     # PATIENT INFO SECTION SECOND
     st.markdown("---")
@@ -753,12 +674,13 @@ with col1:
                     row=1, col=1
                 )
                 
+                # Add traces for SBP and DBP
                 fig.add_trace(
                     go.Scatter(
                         x=list(range(len(st.session_state.abp_history))), 
                         y=st.session_state.sbp_history,
                         mode='lines',
-                        name='ABP',
+                        name='SBP',
                         line=dict(color='blue')
                     ),
                     row=2, col=1
@@ -826,17 +748,20 @@ with col1:
                 )
 
                 # Auto-open chatbot if severe condition detected
-                if (BP_status == "Hypertensive Crisis" or HR_status == "Tachycardia (high)"):
+                if (BP_status == "Hypertensive Crisis" or 
+                    # HR_status == "Severe Hypoxemia" or 
+                    HR_status == "Tachycardia (high)"):
+
 
                     if BP_status == "Hypertensive Crisis" and HR_status == "Tachycardia (high)":
                         if not st.session_state.show_chatbot:
                             st.session_state.show_chatbot = True
-
+                            # Generate alert message using Hugging Face model
                             alert_prompt = f"""
                             The patient's vital signs monitoring system has detected a critical condition: {BP_status} and {HR_status}.
                             Current readings:
                             - Heart Rate (PPG): {ppg:.2f} bpm
-                            - Blood Pressure: {abp:.0f} mmHg
+                            - Blood Pressure: {sbp:.0f}/{dbp:.0f} mmHg
                             - SpO2: {spo2:.1f}%
                             - Age: {age}
                             - Gender: {gender}
@@ -844,12 +769,20 @@ with col1:
                             Generate an urgent but calm medical alert message about this situation that provides immediate guidance. 
                             Do not provide specific medication advice but focus on immediate actions the patient should take.
                             """
-
+                            
+                            # Format as a proper chat message
                             alert_messages = [
-                                {"role": "system", "content": "You are a medical emergency assistant. Provide urgent but calm guidance."},
-                                {"role": "user", "content": alert_prompt}
+                                {
+                                    "role": "system",
+                                    "content": "You are a medical emergency assistant. Provide urgent but calm guidance."
+                                },
+                                {
+                                    "role": "user",
+                                    "content": alert_prompt
+                                }
                             ]
-
+                            
+                            # Get alert response from HuggingFace
                             try:
                                 completion = client.chat.completions.create(
                                     model="Qwen/QwQ-32B",
@@ -859,34 +792,24 @@ with col1:
                                 alert_response = completion.choices[0].message.content
                             except Exception as e:
                                 alert_response = f"MEDICAL EMERGENCY DETECTED: {BP_status} and {HR_status} {bp_action}."
-
+                            
+                            # Add alert to chat history in session state
                             st.session_state.chat_history.append({"role": "assistant", "content": f"❗ ALERT: {alert_response}"})
+                            
+                            # Save alert to MongoDB
                             save_chat_message("assistant", f"❗ ALERT: {alert_response}")
-
-                            contacts_collection = db["contacts"]
-
-                            alert_contacts = list(contacts_collection.find({"send": {"$in": ["Alerts", "Both"]}}))
-
-                            for contact in alert_contacts:
-                                try:
-                                    ai_email_agent(
-                                        contact=contact,
-                                        message=f"❗ EMERGENCY ALERT ❗\n\n{alert_response}",
-                                        type_="Alert",
-                                        plot_figs=[fig]
-                                    )
-                                except Exception as e:
-                                    st.error(f"Failed to send alert email to {contact['email']}: {e}")
-
+                            
+                            # # Rerun to update UI
+                            # st.rerun()
                     else:
                         if not st.session_state.show_chatbot:
                             st.session_state.show_chatbot = True
-
+                            # Generate alert message using Hugging Face model
                             alert_prompt = f"""
                             The patient's vital signs monitoring system has detected a critical condition: {HR_status if HR_status =="Tachycardia (high)" else BP_status}.
                             Current readings:
                             - Heart Rate (PPG): {ppg:.2f} bpm
-                            - Blood Pressure: {abp:.0f} mmHg
+                            - Blood Pressure: {sbp:.0f}/{dbp:.0f} mmHg
                             - SpO2: {spo2:.1f}%
                             - Age: {age}
                             - Gender: {gender}
@@ -894,12 +817,20 @@ with col1:
                             Generate an urgent but calm medical alert message about this situation that provides immediate guidance. 
                             Do not provide specific medication advice but focus on immediate actions the patient should take.
                             """
-
+                            
+                            # Format as a proper chat message
                             alert_messages = [
-                                {"role": "system", "content": "You are a medical emergency assistant. Provide urgent but calm guidance."},
-                                {"role": "user", "content": alert_prompt}
+                                {
+                                    "role": "system",
+                                    "content": "You are a medical emergency assistant. Provide urgent but calm guidance."
+                                },
+                                {
+                                    "role": "user",
+                                    "content": alert_prompt
+                                }
                             ]
-
+                            
+                            # Get alert response from HuggingFace
                             try:
                                 completion = client.chat.completions.create(
                                     model="Qwen/QwQ-32B",
@@ -909,25 +840,13 @@ with col1:
                                 alert_response = completion.choices[0].message.content
                             except Exception as e:
                                 alert_response = f"MEDICAL EMERGENCY DETECTED: {HR_status if HR_status == 'Tachycardia (high)' else BP_status}. {hr_action if HR_status == 'Tachycardia (high)' else bp_action}."
-
+                            
+                            # Add alert to chat history in session state
                             st.session_state.chat_history.append({"role": "assistant", "content": f"❗ ALERT: {alert_response}"})
+                            
+                            # Save alert to MongoDB
                             save_chat_message("assistant", f"❗ ALERT: {alert_response}")
-
-                            contacts_collection = db["contacts"]
-
-                            alert_contacts = list(contacts_collection.find({"send": {"$in": ["Alerts", "Both"]}}))
-
-                            for contact in alert_contacts:
-                                try:
-                                    ai_email_agent(
-                                        contact=contact,
-                                        message=f"❗ EMERGENCY ALERT ❗\n\n{alert_response}",
-                                        type_="Alert",
-                                        plot_figs=[fig]
-                                    )
-                                except Exception as e:
-                                    st.error(f"Failed to send alert email to {contact['email']}: {e}")
-
+                            
                             # # Rerun to update UI
                             # st.rerun()
                     
@@ -1175,19 +1094,19 @@ with col1:
     with tab3:
         st.header("📇 Emergency Contact Information")
 
+        # Initialize session state
         if "contacts" not in st.session_state:
             st.session_state.contacts = []
-
         if "edit_index" not in st.session_state:
             st.session_state.edit_index = None
+        if "form_submitted" not in st.session_state:
+            st.session_state.form_submitted = False
 
-        
-
-        # Add new or edit form
+        # Section separator
         st.markdown("---")
         st.subheader("➕ Add/Edit Contact")
 
-        # Load edit values if editing
+        # Use edit values if available
         if st.session_state.edit_index is not None:
             contact = st.session_state.contacts[st.session_state.edit_index]
             default_name = contact["name"]
@@ -1200,22 +1119,32 @@ with col1:
             default_who = "Me"
             default_send = ["Alerts", "Report"]
 
-        name = st.text_input("Contact Name", value=default_name)
-        email = st.text_input("Contact Email", value=default_email)
-        who = st.selectbox("Who is this?", ["Me", "Doctor", "Friend/Family"], index=["Me", "Doctor", "Friend/Family"].index(default_who))
-        send = st.multiselect("Send What", ["Alerts", "Report"], default=default_send)
+        # Input form
+        name = st.text_input("Contact Name", value=default_name, key="name_input")
+        email = st.text_input("Contact Email", value=default_email, key="email_input")
+        who = st.selectbox("Who is this?", ["Me", "Doctor", "Friend/Family"],
+                        index=["Me", "Doctor", "Friend/Family"].index(default_who), key="who_select")
+        send = st.multiselect("Send What", ["Alerts", "Report"], default=default_send, key="send_select")
 
+        # Save contact
         if st.button("Save Contact"):
-            contact_data = {"name": name, "email": email, "who": who, "send": send}
+            new_contact = {"name": name, "email": email, "who": who, "send": send}
             if st.session_state.edit_index is not None:
-                st.session_state.contacts[st.session_state.edit_index] = contact_data
+                st.session_state.contacts[st.session_state.edit_index] = new_contact
                 st.session_state.edit_index = None
             else:
-                st.session_state.contacts.append(contact_data)
-            st.rerun()
+                st.session_state.contacts.append(new_contact)
+            save_contact_to_mongodb(new_contact)
+            st.session_state.form_submitted = True
+
+        # Reset fields if form was submitted
+        if st.session_state.form_submitted:
+            st.session_state.edit_index = None  # Reset the edit index to allow new contacts to be added
+            st.experimental_rerun()  # This reruns the script, which will clear the inputs automatically.
+
+        # Saved Contacts Section
         st.subheader("📇 Saved Contacts")
 
-        # Display headers
         header_cols = st.columns([2, 3, 2, 3, 1, 1])
         header_cols[0].markdown("**Name**")
         header_cols[1].markdown("**Email**")
@@ -1224,7 +1153,6 @@ with col1:
         header_cols[4].markdown("**✏️**")
         header_cols[5].markdown("**🗑️**")
 
-        # Display saved contacts
         for i, contact in enumerate(st.session_state.contacts):
             cols = st.columns([2, 3, 2, 3, 1, 1])
             cols[0].write(contact["name"])
@@ -1233,10 +1161,12 @@ with col1:
             cols[3].write(", ".join(contact["send"]))
             if cols[4].button("✏️", key=f"edit_{i}"):
                 st.session_state.edit_index = i
+                st.session_state.form_submitted = False
             if cols[5].button("🗑️", key=f"delete_{i}"):
+                delete_contact_and_archive(contact["email"])
                 st.session_state.contacts.pop(i)
-                st.rerun()
-
+                st.session_state.edit_index = None
+                st.session_state.form_submitted = False
 # Add footer with disclaimer
 st.markdown("---")
 st.caption("⚠️ Disclaimer: This application is for demonstration purposes only. Do not use for actual medical diagnosis or treatment. Always consult with qualified healthcare professionals for medical advice.")
