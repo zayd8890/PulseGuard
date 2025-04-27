@@ -1,10 +1,9 @@
 streamlit==1.16.0
 matplotlib==3.5.1
 plotly==5.7.0
-pymongo==4.0.1
+pymongo[srv]==3.12.1
 python-dotenv==0.19.2
-pandas 
+pandas
 numpy
 toml
 altair==4.2.0
-pymongo[srv]==3.12.1
