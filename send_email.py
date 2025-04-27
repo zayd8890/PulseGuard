@@ -3,9 +3,11 @@ from email.message import EmailMessage
 import io
 from typing import Optional, List
 import matplotlib.pyplot as plt
+import toml
 
-EMAIL_USER ="elouaragli.zayd@etu.uae.ac.ma"
-EMAIL_PASSWORD="fsyk rqyz axog mhpz"
+config = toml.load('config.toml')
+EMAIL_USER =config['secrets']['EMAIL_USER']
+EMAIL_PASSWORD=config['secrets']['EMAIL_PASSWORD']
 def ai_email_agent(contact: dict, message: str, type_: str = "Report", plot_figs: Optional[List[plt.Figure]] = None):
     email = contact["email"]
     subject = f"Medical Monitoring - {type_}"
