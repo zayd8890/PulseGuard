@@ -566,7 +566,7 @@ with col2:
     with chat_expander:
         st.subheader("Medical Assistant")
 
-        chat_container = st.container(height=400)
+        chat_container = st.container()
 
         # Chat input form with Send and Reset on the same row
         with st.form(key="chat_form", clear_on_submit=True):
