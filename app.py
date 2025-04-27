@@ -570,7 +570,7 @@ with col2:
 
         # Chat input form with Send and Reset on the same row
         with st.form(key="chat_form", clear_on_submit=True):
-            col21, col22 = st.columns([5, 1.25])
+            col21, col22 = st.columns([4, 1])
             with col21:
                 user_input = st.text_input("Ask the medical assistant...", key="chatbot_input_form")
             with col22:
