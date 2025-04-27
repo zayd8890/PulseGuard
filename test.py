@@ -1,7 +1,9 @@
 import streamlit as st
+from config.config import MONGOBD_CONNECTION_STRING,DEEPSEEK_API
 import pandas as pd
 import numpy as np
 import datetime
+from deepseek import ChatModel
 import time
 from tools.send_email import ai_email_agent
 import json
@@ -16,17 +18,17 @@ from huggingface_hub import InferenceClient
 # Set page configuration
 st.set_page_config(page_title="Medical Monitoring System", layout="wide")
 
-# Configure Hugging Face Client
-client = InferenceClient(
-    provider="sambanova",
-    api_key="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",
+
+deepseek_model = ChatModel(
+    api_key=DEEPSEEK_API,  # or directly use your variable
+    model="deepseek-chat",               # or another model like "deepseek-coder" if you want
 )
 
 # MongoDB Connection
 # Initialize MongoDB connection
 def get_mongodb_connection():
     # Replace with your MongoDB connection string
-    connection_string = "mongodb+srv://zayd88903:zayd202020@cluster0.mwmxpcy.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+    connection_string =MONGOBD_CONNECTION_STRING
     client = MongoClient(connection_string)
     db = client["medical_monitoring"]
     return db
@@ -72,14 +74,57 @@ Output ONLY the email body as plain text.
     ai_email_agent(contact, report_message, type="Report")
 
 # Load chat history from MongoDB
+def filter_history_by_period(start_time=None, end_time=None, last_n=120):
+    filtered_data = {
+        "ppg_history": [],
+        "abp_history": [],
+        "spo2_history": [],
+        "sbp_history": [],
+        "dbp_history": [],
+        "time_history": []
+    }
+    
+    # If time range is provided, filter by start and end time
+    if start_time and end_time:
+        for i, timestamp in enumerate(st.session_state.time_history):
+            if start_time <= timestamp <= end_time:
+                filtered_data["ppg_history"].append(st.session_state.ppg_history[i])
+                filtered_data["abp_history"].append(st.session_state.abp_history[i])
+                filtered_data["spo2_history"].append(st.session_state.spo2_history[i])
+                filtered_data["sbp_history"].append(st.session_state.sbp_history[i])
+                filtered_data["dbp_history"].append(st.session_state.dbp_history[i])
+                filtered_data["time_history"].append(timestamp)
+    else:
+        # Default to the last 120 entries if no time range is provided
+        if len(st.session_state.time_history) > last_n:
+            filtered_data["ppg_history"] = st.session_state.ppg_history[-last_n:]
+            filtered_data["abp_history"] = st.session_state.abp_history[-last_n:]
+            filtered_data["spo2_history"] = st.session_state.spo2_history[-last_n:]
+            filtered_data["sbp_history"] = st.session_state.sbp_history[-last_n:]
+            filtered_data["dbp_history"] = st.session_state.dbp_history[-last_n:]
+            filtered_data["time_history"] = st.session_state.time_history[-last_n:]
+        else:
+            # If there are fewer than 120 entries, use all available
+            filtered_data["ppg_history"] = st.session_state.ppg_history
+            filtered_data["abp_history"] = st.session_state.abp_history
+            filtered_data["spo2_history"] = st.session_state.spo2_history
+            filtered_data["sbp_history"] = st.session_state.sbp_history
+            filtered_data["dbp_history"] = st.session_state.dbp_history
+            filtered_data["time_history"] = st.session_state.time_history
+
+    return filtered_data
 def load_chat_history():
     try:
-        # Sort by timestamp to get history in chronological order
-        chat_documents = chat_history_collection.find().sort("timestamp", 1)
-        chat_history = []
+        # Get the last 10 messages sorted by timestamp (oldest to newest)
+        chat_documents = (
+            chat_history_collection.find()
+            .sort("timestamp", -1)  # Sort newest first
+            .limit(5)              # Take 10 most recent
+        )
+        chat_documents = list(chat_documents)[::-1]  # Reverse to oldest first
         
+        chat_history = []
         for doc in chat_documents:
-            # Convert MongoDB document to chat format
             chat_history.append({
                 "role": doc["role"],
                 "content": doc["content"]
@@ -89,6 +134,7 @@ def load_chat_history():
     except Exception as e:
         st.error(f"Error loading chat history: {e}")
         return []
+
 
 # Save chat message to MongoDB
 def save_chat_message(role, content):
@@ -302,7 +348,7 @@ def get_iot_data():
     return ppg, abp, spo2, sbp, dbp
 
 # Function to generate response using Hugging Face QwQ-32B model
-def get_llm_response(prompt, chat_history=None):
+def get_llm_response(prompt,deepseek_model, chat_history=None):
     # Create a consolidated context from chat history
     formatted_messages = []
     
@@ -322,19 +368,21 @@ def get_llm_response(prompt, chat_history=None):
 
             Behaviors:
             - If the user is asking a general medical question, provide a normal helpful response.
-            - If the user is requesting a report (summaries, statistics, monitoring period, vitals evolution), 
+            - If the user is requesting a report (summaries, statistics, monitoring period, vitals evolution) the reports is send as an email, 
             reply ONLY with a JSON format:
             {{
                 "normal_text": "string"(e.g:The report has been sent!),
                 "name" :"string" (default: No),
-                "email": "string" (default:No) 
-                "period_range": "string",
-                "heart_rate": true or false,
-                "blood_pressure": true or false,
-                "spo2": true or false,
-                "SBP": true or false,
-                "DBP": true or false,
-                "additional_notes": "string"
+                "email": "string" (default:No), 
+                "period_range": "string" (default:No),
+                "start_time": string,
+                "end_time": string,
+                "heart_rate": true or false (default:True),
+                "blood_pressure": true or false (default:True),
+                "spo2": true or false (default:True),
+                "SBP": true or false (default:True),
+                "DBP": true or false (default:True),
+                "message_email": "string" ( this should be the body message, note that the destinater may not be the one requesting the report)
             }}
             - "normal_text" should always summarize the response normally even when sending the JSON.
 
@@ -342,9 +390,9 @@ def get_llm_response(prompt, chat_history=None):
             - If you detect any emergency (e.g., Hypertensive Crisis, Tachycardia), politely advise immediate medical attention.
             - Never suggest any medication or specific treatments.
             - Never mix JSON and normal text outside of "normal_text" field.
+            - Never mix JSON and normal text outside of "normal_text" field.
             """
 
-    
     formatted_messages.append({
         "role": "system",
         "content": system_message
@@ -365,15 +413,15 @@ def get_llm_response(prompt, chat_history=None):
     })
     
     try:
-        # Call the QwQ-32B model
-        completion = client.chat.completions.create(
-            model="Qwen/QwQ-32B",
+        # Call DeepSeek API to get the response
+        completion = deepseek_model.chat(
             messages=formatted_messages,
-            max_tokens=512,
+            temperature=0.7,  # You can tweak these parameters as needed
+            max_tokens=512
         )
-        
+
         # Extract the response text
-        response_text = completion.choices[0].message.content
+        response_text = completion["choices"][0]["message"]["content"]
         return response_text
         
     except Exception as e:
@@ -425,7 +473,7 @@ with title:
 top_row = st.container()
 with top_row:
     # Reordered columns for vital signs display
-    HR_status, hr_col, spo2_col, abp_col, BP_status, _ = st.columns([.9, 1, 0.75, .8, .75, 2])
+    HR_status, hr_col, spo2_col, abp_col, BP_status, _ = st.columns([1.25, 1, 0.75, .8, 1.25, 1.5])
     
     # Create placeholder for status box
     with HR_status:
@@ -510,6 +558,170 @@ with col2:
         st.subheader("Medical Assistant")
 
         chat_container = st.container(height=400)
+
+        # Chat input form with Send and Reset on the same row
+        with st.form(key="chat_form", clear_on_submit=True):
+            col21, col22 = st.columns([5, 1.25])
+            with col21:
+                user_input = st.text_input("Ask the medical assistant...", key="chatbot_input_form")
+            with col22:
+                submit = st.form_submit_button("Send")
+            
+            reset = st.form_submit_button("Reset")
+
+            if reset:
+                st.session_state.chat_history = []
+                st.rerun()
+
+        if submit and user_input != '':
+            # Save user message
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
+            save_chat_message("user", user_input)
+
+            # Get assistant reply (pass deepseek_model as argument)
+            response = get_llm_response(user_input, deepseek_model, st.session_state.chat_history)
+
+            # Remove backticks if the response is wrapped in code block (i.e., triple backticks)
+            if response.startswith("```json") and response.endswith("```"):
+                response = response[7:-3].strip()  # Remove ```json at the start and ``` at the end
+
+            # Try parsing response as JSON, if possible
+            try:
+                parsed_response = json.loads(response)
+                if parsed_response.get('period_range') and parsed_response['period_range'] != "No":
+                    period_range = parsed_response['period_range']
+                    start_time_str, end_time_str = period_range.split(" to ")
+                    
+                    # Convert start and end times to datetime
+                    start_time = datetime.strptime(parsed_response['start_time'], "%Y-%m-%d %H:%M:%S")  # Adjust format as per your input
+                    end_time = datetime.strptime(parsed_response['end_time'], "%Y-%m-%d %H:%M:%S")  # Adjust format as per your input
+                    
+                    # Filter histories based on the time range
+                    filtered_data = filter_history_by_period(start_time, end_time)
+                else:
+                    # If no period_range is given, filter the last 120 values
+                    filtered_data = filter_history_by_period()
+
+
+
+                fig_report = make_subplots(
+                    rows=3, cols=1, 
+                    shared_xaxes=True, 
+                    subplot_titles=("Heart Rate History", "Blood Pressure History", "SpO2 History"),
+                    vertical_spacing=0.1
+                )
+
+                # Add heart rate trace
+                if filtered_data['ppg_history'] != []:
+                    fig_report.add_trace(
+                        go.Scatter(
+                            x=filtered_data['time_history'], 
+                            y=filtered_data['ppg_history'],
+                            mode='lines+markers',
+                            name='Heart Rate',
+                            line=dict(color='red')
+                        ),
+                        row=1, col=1
+                    )
+
+                # Add blood pressure traces
+                if filtered_data['sbp_history'] != []:
+                    fig_report.add_trace(
+                        go.Scatter(
+                            x=filtered_data['time_history'], 
+                            y=filtered_data['sbp_history'],
+                            mode='lines+markers',
+                            name='SBP',
+                            line=dict(color='blue')
+                        ),
+                        row=2, col=1
+                    )
+                if filtered_data['dbp_history'] !=[]:
+                    fig_report.add_trace(
+                        go.Scatter(
+                            x=filtered_data['time_history'], 
+                            y=filtered_data['dbp_history'],
+                            mode='lines+markers',
+                            name='DBP',
+                            line=dict(color='lightblue')
+                        ),
+                        row=2, col=1
+                    )
+
+                # Add SpO2 trace
+                if filtered_data['spo2_history'] != []:
+                    fig_report.add_trace(
+                        go.Scatter(
+                            x=filtered_data['time_history'], 
+                            y=filtered_data['spo2_history'],
+                            mode='lines+markers',
+                            name='SpO2',
+                            line=dict(color='green')
+                        ),
+                        row=3, col=1
+                    )
+
+                # Update layout with Y-axis labels and margins
+                fig_report.update_layout(
+                    height=600, 
+                    margin=dict(l=100, r=0, t=30, b=0),  # Increase left margin for Y-axis labels
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    
+                    # Add Y-axis labels with specific values
+                    yaxis=dict(
+                        tickvals=[100, 150, 200],  # Define Y-axis tick positions
+                        ticktext=['100', '150', '200'],  # Customize Y-axis labels
+                        title="Heart Rate",
+                        scaleanchor="y",  # Anchor the y-axis for consistent scaling
+                    ),
+                    yaxis2=dict(
+                        tickvals=[60, 100, 160],  # Define Y-axis tick positions
+                        ticktext=['60', '100', '160'],  # Customize Y-axis labels for SBP/DBP
+                        title="Blood Pressure (mmHg)",
+                        scaleanchor="y2",  # Anchor the y-axis for consistent scaling
+                    ),
+                    yaxis3=dict(
+                        tickvals=[90, 95, 100],  # Define Y-axis tick positions for SpO2
+                        ticktext=['90', '95', '100'],  # Customize Y-axis labels
+                        title="SpO2 (%)",
+                        scaleanchor="y3",  # Anchor the y-axis for consistent scaling
+                    ),
+                )
+
+
+                contacts_collection = db["contacts"]
+
+                report_contacts = list(contacts_collection.find({"send": {"$in": ["Report", "Both"]}}))
+
+                for contact in report_contacts:
+                    try:
+                        ai_email_agent(
+                            contact=contact,
+                            message=parsed_response['message_email'],
+                            type_="Report",
+                            plot_figs= [fig_report]
+                        )
+                    except Exception as e:
+                        st.error(f"Failed to send report email to {contact['email']}: {e}")
+
+                if isinstance(parsed_response, dict) and "normal_text" in parsed_response:
+                    assistant_reply = parsed_response["normal_text"]
+                else:
+                    assistant_reply = response
+
+            except json.JSONDecodeError:
+                # If response isn't JSON, it's just normal text
+                print('please god no')
+                assistant_reply = response
+
+            # Save assistant message
+            st.session_state.chat_history.append({"role": "assistant", "content": assistant_reply})
+            save_chat_message("assistant", assistant_reply)
+
+            # Set a flag to show immediately
+            st.session_state.new_message = True
+
+        # Display the chat
         with chat_container:
             for chat in st.session_state.chat_history:
                 if chat["role"] == "user":
@@ -517,68 +729,13 @@ with col2:
                 else:
                     st.write(f"🤖 **Assistant**: {chat['content']}")
 
-        # Chat input form
-        with st.form(key="chat_form", clear_on_submit=True):
-            user_input = st.text_input("Ask the medical assistant...", key="chatbot_input_form")
-            submit = st.form_submit_button("Send")
-
-        if submit and user_input:
-            st.session_state.chat_history.append({"role": "user", "content": user_input})
-            save_chat_message("user", user_input)
-
-            response = get_llm_response(user_input, st.session_state.chat_history)
-
-            try:
-                parsed_response = json.loads(response)
-
-                if isinstance(parsed_response, dict) and "normal_text" in parsed_response:
-                    # Show the normal text (the message for user)
-                    st.session_state.chat_history.append({"role": "assistant", "content": parsed_response["normal_text"]})
-                    save_chat_message("assistant", parsed_response["normal_text"])
-
-                    # Print the normal message in the UI
-                    st.markdown(parsed_response["normal_text"])
-
-                    # Start the message
-                    report_message = f"Hi{'' if parsed_response.get('name') == 'No' else ' ' + parsed_response.get('name', '')}, here is your report summary:\n\n"
-
-                    # Build the report based on selected fields
-                    field_mappings = {
-                        'period_range': "Period Range: {}",
-                        'PPG': "Heart Rate data is included.",
-                        'ABP': "Blood Pressure data is included.",
-                        'SBP': "Systolic Blood Pressure (SBP) is included.",
-                        'DBP': "Diastolic Blood Pressure (DBP) is included.",
-                        'spo2': "SpO₂ (Oxygen Saturation) data is included."
-}
-
-                    # Add Period Range if it exists
-                    if parsed_response.get('period_range') and parsed_response['period_range'] != "No":
-                        report_message += f"- {field_mappings['period_range'].format(parsed_response['period_range'])}\n"
-
-                    # Add the other requested fields
-                    for key in ['PPG', 'ABP', 'SBP', 'DBP', 'spo2']:
-                        if parsed_response.get(key, False):
-                            report_message += f"- {field_mappings[key]}\n"
+        # Optional: clean the flag
+        if 'new_message' in st.session_state:
+            del st.session_state['new_message']
 
 
-                    # Here you would call your email sending logic
-                    # send_report_email(parsed_response)  <-- (for example)
 
-                    # Inform the user that the report was sent
-                    st.success("✅ The report has been sent successfully!")
 
-                else:
-                    # Not the expected JSON, treat it normally
-                    st.session_state.chat_history.append({"role": "assistant", "content": response})
-                    save_chat_message("assistant", response)
-                    st.markdown(response)
-
-            except json.JSONDecodeError:
-                # Not a JSON, treat it normally
-                st.session_state.chat_history.append({"role": "assistant", "content": response})
-                save_chat_message("assistant", response)
-                st.markdown(response)
     
     # PATIENT INFO SECTION SECOND
     st.markdown("---")
@@ -851,11 +1008,11 @@ with col1:
                             ]
 
                             try:
-                                completion = client.chat.completions.create(
-                                    model="Qwen/QwQ-32B",
-                                    messages=alert_messages,
-                                    max_tokens=512,
-                                )
+                                completion = deepseek_model.chat(
+                                messages=alert_messages,
+                                temperature=0.7,  # You can tweak these parameters as needed
+                                max_tokens=512
+                            )
                                 alert_response = completion.choices[0].message.content
                             except Exception as e:
                                 alert_response = f"MEDICAL EMERGENCY DETECTED: {BP_status} and {HR_status} {bp_action}."
@@ -901,11 +1058,11 @@ with col1:
                             ]
 
                             try:
-                                completion = client.chat.completions.create(
-                                    model="Qwen/QwQ-32B",
-                                    messages=alert_messages,
-                                    max_tokens=512,
-                                )
+                                completion = deepseek_model.chat(
+                                messages=alert_messages,
+                                temperature=0.7,  # You can tweak these parameters as needed
+                                max_tokens=512
+                            )
                                 alert_response = completion.choices[0].message.content
                             except Exception as e:
                                 alert_response = f"MEDICAL EMERGENCY DETECTED: {HR_status if HR_status == 'Tachycardia (high)' else BP_status}. {hr_action if HR_status == 'Tachycardia (high)' else bp_action}."
@@ -1175,13 +1332,14 @@ with col1:
     with tab3:
         st.header("📇 Emergency Contact Information")
 
+        contacts_collection = db["contacts"]
+
         if "contacts" not in st.session_state:
-            st.session_state.contacts = []
+            # Load contacts from MongoDB if not in session state
+            st.session_state.contacts = list(contacts_collection.find())
 
         if "edit_index" not in st.session_state:
             st.session_state.edit_index = None
-
-        
 
         # Add new or edit form
         st.markdown("---")
@@ -1194,11 +1352,13 @@ with col1:
             default_email = contact["email"]
             default_who = contact["who"]
             default_send = contact["send"]
+            print(contact)
         else:
             default_name = ""
             default_email = ""
             default_who = "Me"
             default_send = ["Alerts", "Report"]
+        
 
         name = st.text_input("Contact Name", value=default_name)
         email = st.text_input("Contact Email", value=default_email)
@@ -1207,12 +1367,20 @@ with col1:
 
         if st.button("Save Contact"):
             contact_data = {"name": name, "email": email, "who": who, "send": send}
+            
             if st.session_state.edit_index is not None:
-                st.session_state.contacts[st.session_state.edit_index] = contact_data
+                # Update contact in MongoDB
+                contact_id = st.session_state.contacts[st.session_state.edit_index]["_id"]
+                contacts_collection.update_one({"_id": contact_id}, {"$set": contact_data})
                 st.session_state.edit_index = None
             else:
-                st.session_state.contacts.append(contact_data)
+                # Insert new contact in MongoDB
+                contacts_collection.insert_one(contact_data)
+            
+            # Reload contacts from MongoDB
+            st.session_state.contacts = list(contacts_collection.find())
             st.rerun()
+
         st.subheader("📇 Saved Contacts")
 
         # Display headers
@@ -1231,9 +1399,14 @@ with col1:
             cols[1].write(contact["email"])
             cols[2].write(contact["who"])
             cols[3].write(", ".join(contact["send"]))
+            
             if cols[4].button("✏️", key=f"edit_{i}"):
                 st.session_state.edit_index = i
+            
             if cols[5].button("🗑️", key=f"delete_{i}"):
+                # Delete contact from MongoDB
+                contact_id = contact["_id"]
+                contacts_collection.delete_one({"_id": contact_id})
                 st.session_state.contacts.pop(i)
                 st.rerun()
 
