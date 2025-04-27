@@ -7,3 +7,4 @@ pandas
 numpy
 toml
 altair==4.2.0
+pymongo[srv]==3.12.1
