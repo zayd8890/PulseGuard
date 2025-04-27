@@ -572,13 +572,14 @@ with col2:
 
         # Chat input form with Send and Reset on the same row
         with st.form(key="chat_form", clear_on_submit=True):
-            col21, col22 = st.columns([4, 1])
+            user_input = st.text_input("Ask the medical assistant...", key="chatbot_input_form")
+            col21, col22,col23 = st.columns([1.25,3, 1.25])
+            with col23:
+                reset = st.form_submit_button("Reset")
             with col21:
-                user_input = st.text_input("Ask the medical assistant...", key="chatbot_input_form")
-            with col22:
                 submit = st.form_submit_button("Send")
             
-            reset = st.form_submit_button("Reset")
+            
 
             if reset:
                 st.session_state.chat_history = []
