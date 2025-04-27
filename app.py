@@ -16,6 +16,8 @@ import pymongo
 from pymongo import MongoClient
 
 
+print((f"Streamlit version: {st.__version__}"))
+
 config = toml.load('config.toml')
 MONGODB_CONNECTION_STRING = config['secrets']['MONGOBD_CONNECTION_STRING']
 DEEPSEEK_API = config['secrets']['DEEPSEEK_API']
