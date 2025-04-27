@@ -1,5 +1,5 @@
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import timedelta
 import datetime
 import pandas as pd 
 import numpy
@@ -335,7 +335,7 @@ def get_iot_data(db):
     collection = db['vital_signs']  
     
     # Define the time range to fetch the most recent data (last 2 seconds)
-    current_time = datetime.now()
+    current_time = datetime.datetime.now()
     time_range = current_time - timedelta(seconds=2)  # Subtract 2 seconds from current time
     
     # Query the MongoDB collection for data within the last 2 seconds
