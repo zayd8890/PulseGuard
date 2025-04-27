@@ -1,7 +1,6 @@
 import streamlit as st
 from config.config import MONGOBD_CONNECTION_STRING,DEEPSEEK_API
-import pandas as pd
-import numpy as np
+from datetime import datetime, timedelta
 import datetime
 from deepseek import ChatModel
 import time
@@ -13,7 +12,6 @@ from plotly.subplots import make_subplots
 import os
 import pymongo
 from pymongo import MongoClient
-from huggingface_hub import InferenceClient
 
 # Set page configuration
 st.set_page_config(page_title="Medical Monitoring System", layout="wide")
@@ -321,31 +319,35 @@ def predict_hr_condition(hr, activity="Resting"):
     
     return condition, confidence, action_alert
 
-# Function to simulate IoT data with random uniform distributions
-def get_iot_data():
-    """Generate random PPG, ABP, SpO2, SBP, and DBP data"""
-    # Generate random PPG (Heart Rate) between 40-180 bpm
-    ppg = random.uniform(40, 180)
+
+
+
+def get_iot_data(db):
+    """Fetch IoT data from MongoDB for PPG, ABP, SpO2, SBP, and DBP"""
+
+    collection = db['vital_signs']  
     
-    # Generate random ABP (Arterial Blood Pressure) between 60-120 mmHg
-    abp = random.uniform(60, 120)
+    # Define the time range to fetch the most recent data (last 2 seconds)
+    current_time = datetime.now()
+    time_range = current_time - timedelta(seconds=2)  # Subtract 2 seconds from current time
     
-    # Generate SpO2 value (normally between 95-100%)
-    # Add slight variation around normal values with occasional lower values
-    rand_val = random.random()
-    if rand_val > 0.95:  # 5% chance of lower SpO2
-        spo2 = random.uniform(88, 94)
+    # Query the MongoDB collection for data within the last 2 seconds
+    data = collection.find_one({"timestamp": {"$gte": time_range}})  # Adjust this query as needed
+    
+    # If data is found, extract values from the document
+    if data:
+        # Use .get() with a default value of 0 if the field is missing
+        ppg = data.get('ppg', 0)  # Replace 'ppg' with the correct field name
+        abp = data.get('abp', 0)  # Replace 'abp' with the correct field name
+        spo2 = data.get('spo2', 0)  # Replace 'spo2' with the correct field name
+        sbp = data.get('sbp', 0)  # Replace 'sbp' with the correct field name
+        dbp = data.get('dbp', 0)  # Replace 'dbp' with the correct field name
+        
+        return ppg, abp, spo2, sbp, dbp
     else:
-        spo2 = random.uniform(95, 100)
-    
-    # Generate SBP and DBP values based on ABP
-    # Using a simple approximation formula: SBP ≈ MAP + (PP/3) and DBP ≈ MAP - (2*PP/3)
-    # where PP (pulse pressure) is estimated as a fraction of ABP
-    pulse_pressure = abp * 0.4  # Estimate pulse pressure as 40% of ABP
-    sbp = abp + (pulse_pressure/3)
-    dbp = abp - (2*pulse_pressure/3)
-    
-    return ppg, abp, spo2, sbp, dbp
+        print("No data found in MongoDB.")
+        return 0, 0, 0, 0, 0  # Return 0s if no data found
+
 
 # Function to generate response using Hugging Face QwQ-32B model
 def get_llm_response(prompt,deepseek_model, chat_history=None):
@@ -829,7 +831,7 @@ with col1:
             
             while start_monitoring:
                 # Get new data point
-                ppg, abp, spo2, sbp, dbp = get_iot_data()
+                ppg, abp, spo2, sbp, dbp = get_iot_data(db)
                 
                 # Update current values in session state
                 st.session_state.current_ppg = ppg
