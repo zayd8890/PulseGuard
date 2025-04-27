@@ -288,22 +288,25 @@ def predict_bp_condition(sbp, dbp):
     confidence = 1.0
     
     # Check the blood pressure thresholds
-    for bp_threshold in thresholds_data["blood_pressure"]:
-        if (sbp >= bp_threshold["min"]["SBP"] and sbp <= bp_threshold["max"]["SBP"] and
-            dbp >= bp_threshold["min"]["DBP"] and dbp <= bp_threshold["max"]["DBP"]):
-            condition = bp_threshold["condition"]
-            action_alert = bp_threshold["action_alert"]
-            break
-    
-    # If SBP and DBP fall into different categories, use the more severe one
-    if condition == "Normal":
+    if sbp == 0:
+        status == 'low'
+    else:
         for bp_threshold in thresholds_data["blood_pressure"]:
-            if (sbp >= bp_threshold["min"]["SBP"] and sbp <= bp_threshold["max"]["SBP"]) or \
-               (dbp >= bp_threshold["min"]["DBP"] and dbp <= bp_threshold["max"]["DBP"]):
-                if bp_threshold["condition"] != "Normal":
-                    condition = bp_threshold["condition"]
-                    action_alert = bp_threshold["action_alert"]
-                    break
+            if (sbp >= bp_threshold["min"]["SBP"] and sbp <= bp_threshold["max"]["SBP"] and
+                dbp >= bp_threshold["min"]["DBP"] and dbp <= bp_threshold["max"]["DBP"]):
+                condition = bp_threshold["condition"]
+                action_alert = bp_threshold["action_alert"]
+                break
+        
+        # If SBP and DBP fall into different categories, use the more severe one
+        if condition == "Normal":
+            for bp_threshold in thresholds_data["blood_pressure"]:
+                if (sbp >= bp_threshold["min"]["SBP"] and sbp <= bp_threshold["max"]["SBP"]) or \
+                (dbp >= bp_threshold["min"]["DBP"] and dbp <= bp_threshold["max"]["DBP"]):
+                    if bp_threshold["condition"] != "Normal":
+                        condition = bp_threshold["condition"]
+                        action_alert = bp_threshold["action_alert"]
+                        break
     
     return condition, confidence, action_alert
 
